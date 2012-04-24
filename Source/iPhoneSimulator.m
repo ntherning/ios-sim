@@ -10,6 +10,8 @@
 #import "nsprintf.h"
 #import <sys/types.h>
 #import <sys/stat.h>
+#import <signal.h>
+
 
 /**
  * A simple iPhoneSimulatorRemoteClient framework.
@@ -28,6 +30,7 @@
   fprintf(stderr, "  --help                          Show this help text\n");
   fprintf(stderr, "  --verbose                       Set the output level to verbose\n");
   fprintf(stderr, "  --exit                          Exit after startup\n");
+  fprintf(stderr, "  --debug                         Start a gdb session and attach to the application after startup\n");
   fprintf(stderr, "  --sdk <sdkversion>              The iOS SDK version to run the application on (defaults to the latest)\n");
   fprintf(stderr, "  --family <device family>        The device type that should be simulated (defaults to `iphone')\n");
   fprintf(stderr, "  --uuid <uuid>                   A UUID identifying the session (is that correct?)\n");
@@ -35,9 +38,16 @@
   fprintf(stderr, "  --setenv NAME=VALUE             Set an environment variable\n");
   fprintf(stderr, "  --stdout <stdout file path>     The path where stdout of the simulator will be redirected to (defaults to stdout of ios-sim)\n");
   fprintf(stderr, "  --stderr <stderr file path>     The path where stderr of the simulator will be redirected to (defaults to stderr of ios-sim)\n");
+  fprintf(stderr, "  --unbuffered                    Do not buffer stdout\n");
   fprintf(stderr, "  --args <...>                    All following arguments will be passed on to the application\n");
 }
 
+static int childPID;
+static void killed(int signum)
+{
+  kill(childPID, SIGTERM);
+  _exit(0);
+}
 
 - (int) showSDKs {
   NSArray *roots = [DTiPhoneSimulatorSystemRoot knownRoots];
@@ -79,7 +89,14 @@
     if (verbose) {
       nsprintf(@"Session started");
     }
-    if (exitOnStartup) {
+
+    childPID = [(NSNumber*) [session simulatedApplicationPID] intValue];
+    signal(SIGINT, killed);
+    signal(SIGTERM, killed);
+
+    if (debug) {
+      system([[NSString stringWithFormat:@"/usr/bin/gdb --pid %@", [session simulatedApplicationPID]] UTF8String]);
+    } else if (exitOnStartup) {
       exit(EXIT_SUCCESS);
     }
   } else {
@@ -101,9 +118,9 @@
     }
   }
   if ([notification object] == stdoutFileHandle) {
-    printf("%s", [str UTF8String]);
+    fprintf(stdout, "%s", [str UTF8String]);
   } else {
-    nsprintf(str);
+    fprintf(stderr, "%s", [str UTF8String]);
   }
 }
 
@@ -139,7 +156,6 @@
   }
 }
 
-
 - (int)launchApp:(NSString *)path withFamily:(NSString *)family
                                         uuid:(NSString *)uuid
                                  environment:(NSDictionary *)environment
@@ -170,7 +186,7 @@
   config = [[[DTiPhoneSimulatorSessionConfig alloc] init] autorelease];
   [config setApplicationToSimulateOnStart:appSpec];
   [config setSimulatedSystemRoot:sdkRoot];
-  [config setSimulatedApplicationShouldWaitForDebugger: NO];
+  [config setSimulatedApplicationShouldWaitForDebugger: debug];
 
   [config setSimulatedApplicationLaunchArgs:args];
   [config setSimulatedApplicationLaunchEnvironment:environment];
@@ -216,7 +232,7 @@
     [session setUuid:uuid];
   }
 
-  if (![session requestStartWithConfig:config timeout:30 error:&error]) {
+  if (![session requestStartWithConfig:config timeout:300 error:&error]) {
     nsprintf(@"Could not start simulator session: %@", error);
     return EXIT_FAILURE;
   }
@@ -252,6 +268,7 @@
     NSString *stdoutPath = nil;
     NSString *stderrPath = nil;
     NSMutableDictionary *environment = [NSMutableDictionary dictionary];
+    BOOL unbuffered = NO;
     int i = 3;
     for (; i < argc; i++) {
       if (strcmp(argv[i], "--version") == 0) {
@@ -262,6 +279,10 @@
         exit(EXIT_SUCCESS);
       } else if (strcmp(argv[i], "--verbose") == 0) {
         verbose = YES;
+      } else if (strcmp(argv[i], "--debug") == 0) {
+        debug = YES;
+      } else if (strcmp(argv[i], "--unbuffered") == 0) {
+        unbuffered = YES;
       } else if (strcmp(argv[i], "--exit") == 0) {
         exitOnStartup = YES;
       }
@@ -303,11 +324,9 @@
       } else if (strcmp(argv[i], "--stdout") == 0) {
         i++;
         stdoutPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
-        NSLog(@"stdoutPath: %@", stdoutPath);
       } else if (strcmp(argv[i], "--stderr") == 0) {
         i++;
         stderrPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
-        NSLog(@"stderrPath: %@", stderrPath);
       } else if (strcmp(argv[i], "--args") == 0) {
         i++;
         break;
@@ -324,6 +343,10 @@
 
     if (sdkRoot == nil) {
       sdkRoot = [DTiPhoneSimulatorSystemRoot defaultRoot];
+    }
+
+    if (unbuffered) {
+      setbuf(stdout, NULL);
     }
 
     /* Don't exit, adds to runloop */
